@@ -1,4 +1,4 @@
-<p align="center"><img src="https://raw.githubusercontent.com/nickthelomas/ha-electrifix-connect/main/brand/icon.png" width="96" alt="ElectriFix"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/nickthelomas/ha-electrifix-connect/main/custom_components/electrifix_connect/brand/icon.png" width="96" alt="ElectriFix"></p>
 
 # ElectriFix Connect
 
