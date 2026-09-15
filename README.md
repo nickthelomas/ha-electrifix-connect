@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/nickthelomas/ha-electrifix-connect/main/brand/icon.png" width="96" alt="ElectriFix"></p>
+
 # ElectriFix Connect
 
 This is how ElectriFix looks at your Home Assistant while we work on your
