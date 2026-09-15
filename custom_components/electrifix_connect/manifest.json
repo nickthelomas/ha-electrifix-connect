@@ -1,0 +1,14 @@
+{
+  "domain": "electrifix_connect",
+  "name": "ElectriFix Connect",
+  "version": "1.0.0",
+  "documentation": "https://github.com/nickthelomas/ha-electrifix-connect",
+  "issue_tracker": "https://github.com/nickthelomas/ha-electrifix-connect/issues",
+  "codeowners": ["@nickthelomas"],
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "cloud_push",
+  "requirements": [],
+  "dependencies": ["auth", "http"],
+  "after_dependencies": ["cloud"]
+}

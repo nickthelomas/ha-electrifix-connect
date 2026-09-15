@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ElectriFix Connect",
+        "description": "Enter the job code from your ElectriFix job page. That is all — nothing else to set up, and you do not need to create a token.",
+        "data": {
+          "job_code": "Job code"
+        },
+        "data_description": {
+          "job_code": "Copy it from your job page with the copy button."
+        }
+      },
+      "reauth_confirm": {
+        "title": "ElectriFix Connect",
+        "description": "ElectriFix did not accept the job code that was saved. Enter the current code from your job page.",
+        "data": {
+          "job_code": "Job code"
+        }
+      }
+    },
+    "error": {
+      "bad_code": "That job code was not accepted. Check you copied the whole code from your job page.",
+      "rate_limited": "Too many attempts from this connection. Wait a minute and try again.",
+      "relay_off": "ElectriFix Connect is not available just now. Your job page has other ways to connect.",
+      "cannot_connect": "Could not reach ElectriFix. Check this Home Assistant has internet access and try again.",
+      "unknown": "Something went wrong setting this up. Please try again."
+    },
+    "abort": {
+      "already_configured": "This job is already connected.",
+      "reauth_successful": "The new job code was accepted."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "connection": {
+        "name": "Connection"
+      }
+    }
+  }
+}
