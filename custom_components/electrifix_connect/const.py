@@ -27,7 +27,7 @@ DOMAIN: Final = "electrifix_connect"
 
 #: Bumped with the integration; sent in the hello so the service's logs and
 #: the job record say which build a customer is on when something is odd.
-INTEGRATION_VERSION: Final = "1.0.1"
+INTEGRATION_VERSION: Final = "1.1.0"
 
 #: Where the agent dials. Overridable by an environment variable ONLY, and
 #: not by anything a frame can say: a relay that could redirect its own
@@ -166,7 +166,13 @@ POST_PREFIXES: Final[tuple[str, ...]] = ("/api/config/automation/config/",)
 DELETE_PREFIXES: Final[tuple[str, ...]] = ("/api/config/automation/config/",)
 
 #: WebSocket commands. The read-only registry/system commands the sweep
-#: needs, plus the two writes the executor makes over the socket.
+#: needs, plus the writes the executor makes over the socket.
+#:
+#: The three `lovelace/*` entries are the whole of `dashboard_edit` (service
+#: v1.1.0): a storage-mode dashboard can ONLY be read and saved through
+#: these commands, never through a file. `lovelace/resources*` is
+#: deliberately absent -- that edits the JavaScript every dashboard loads,
+#: which is a far larger blast radius than a card.
 WS_COMMANDS: Final[frozenset[str]] = frozenset({
     "auth/current_user",
     "cloud/status",
@@ -187,6 +193,9 @@ WS_COMMANDS: Final[frozenset[str]] = frozenset({
     "get_states",
     "integration/descriptions",
     "logger/log_info",
+    "lovelace/config",
+    "lovelace/config/save",
+    "lovelace/dashboards/list",
     "manifest/list",
     "recorder/info",
     "repairs/list_issues",
