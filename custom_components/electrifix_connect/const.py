@@ -27,7 +27,7 @@ DOMAIN: Final = "electrifix_connect"
 
 #: Bumped with the integration; sent in the hello so the service's logs and
 #: the job record say which build a customer is on when something is odd.
-INTEGRATION_VERSION: Final = "1.1.2"
+INTEGRATION_VERSION: Final = "1.1.3"
 
 #: Where the agent dials. Overridable by an environment variable ONLY, and
 #: not by anything a frame can say: a relay that could redirect its own
@@ -165,6 +165,14 @@ REPLACED_MESSAGE: Final = (
 #: below what it takes to exhaust a small box. A backup is never carried
 #: INBOUND -- it travels agent -> service, where this limit does not apply.
 MAX_MSG_SIZE: Final = 1024 * 1024
+
+#: The LOCAL socket to this Home Assistant's own /api/websocket is a different
+#: animal: its replies are the registry and state dumps the service asks for,
+#: and on a real house those pass 1 MiB easily (a 950-entity install closed
+#: the session with 1009 "message too big" on 2026-09-17, which made every
+#: later command on that session wait out its timeout). 16 MiB matches what
+#: the Home Assistant frontend itself accepts.
+LOCAL_MAX_MSG_SIZE: Final = 16 * 1024 * 1024
 
 #: How many Home Assistant websocket sessions the service may hold open
 #: through us. ONE: the sweep and the planner open a session, use it and

@@ -67,6 +67,7 @@ from .const import (
     INTEGRATION_VERSION,
     LOCAL_REQUEST_TIMEOUT,
     MAX_INFLIGHT,
+    LOCAL_MAX_MSG_SIZE,
     MAX_MSG_SIZE,
     MAX_REPLACEMENTS,
     MAX_WS_SESSIONS,
@@ -777,7 +778,13 @@ class RelayAgent:
         session_id = str(frame.get("session") or "")
         payload = frame.get("payload")
         sess = self._ws_sessions.get(session_id)
-        if sess is None or not isinstance(payload, dict):
+        if sess is None:
+            # Never swallow a send: tell the service the session is gone so
+            # it reopens instead of waiting out a timeout.
+            await self._send({"type": "ws_closed", "session": session_id,
+                              "reason": "no such session"})
+            return
+        if not isinstance(payload, dict):
             return
         command = str(payload.get("type") or "")
         try:
@@ -857,7 +864,7 @@ class _LocalWSSession:
         session = _http_session(self.agent.hass)
         url = self.agent.local_base + "/api/websocket"
         ws = await session.ws_connect(url, heartbeat=30,
-                                      max_msg_size=MAX_MSG_SIZE)
+                                      max_msg_size=LOCAL_MAX_MSG_SIZE)
         self._ws = ws
         # HA's handshake: auth_required -> auth -> auth_ok.
         msg = await ws.receive_json(timeout=LOCAL_REQUEST_TIMEOUT)
@@ -879,9 +886,11 @@ class _LocalWSSession:
         ws = self._ws
         if ws is None:
             return
+        why = "end of stream"
         try:
             async for msg in ws:
                 if msg.type is not aiohttp.WSMsgType.TEXT:
+                    why = f"non-text frame {msg.type!r} (close code {ws.close_code})"
                     break
                 try:
                     payload = json.loads(msg.data)
@@ -891,12 +900,23 @@ class _LocalWSSession:
                                         "session": self.session_id,
                                         "payload": payload})
         except asyncio.CancelledError:
+            why = "cancelled"
             raise
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            why = f"{type(exc).__name__}: {exc}"
         finally:
+            # WHY the session ended is the one fact that was missing on
+            # 2026-09-17, when a first session's local socket closed 30 ms
+            # after its first commands with nothing logged on either side.
+            log = _LOG.info if why in ("end of stream", "cancelled") else _LOG.warning
+            log("ElectriFix Connect: local websocket session %s ended: %s",
+                self.session_id, why)
+            # A dead session must not linger in the table: a later send to
+            # it would be swallowed and the service would wait out a timeout.
+            self.agent._ws_sessions.pop(self.session_id, None)
             await self.agent._send({"type": "ws_closed",
-                                    "session": self.session_id})
+                                    "session": self.session_id,
+                                    "reason": why})
 
     async def async_send(self, payload: dict[str, Any]) -> None:
         ws = self._ws
@@ -905,6 +925,8 @@ class _LocalWSSession:
         await ws.send_str(json.dumps(payload))
 
     async def async_close(self) -> None:
+        _LOG.info("ElectriFix Connect: closing local websocket session %s",
+                  self.session_id)
         task, self._task = self._task, None
         ws, self._ws = self._ws, None
         if ws is not None:
