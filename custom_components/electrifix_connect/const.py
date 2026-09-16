@@ -27,7 +27,7 @@ DOMAIN: Final = "electrifix_connect"
 
 #: Bumped with the integration; sent in the hello so the service's logs and
 #: the job record say which build a customer is on when something is odd.
-INTEGRATION_VERSION: Final = "1.1.1"
+INTEGRATION_VERSION: Final = "1.1.2"
 
 #: Where the agent dials. Overridable by an environment variable ONLY, and
 #: not by anything a frame can say: a relay that could redirect its own
@@ -104,6 +104,53 @@ FINISHED_MESSAGE: Final = "Job finished — you can remove this integration"
 #: Shown on the diagnostic sensor when the service has refused the job code.
 #: A rejected agent is NOT reconnecting, and must not claim to be.
 REJECTED_MESSAGE: Final = "Code rejected — re-enter your job code"
+
+# --------------------------------------------- being replaced (1.1.2)
+#
+# THE FIRST-CONNECTION FAULT, in production on 2026-09-16 and again on
+# 09-17. Two sockets existed for one job -- the config flow's validation
+# socket and the entry's real agent -- and whichever registered second
+# displaced the first. 1.1.1 treated `replaced` as terminal ("the newer
+# socket is ours too"), so the integration stopped for good on the socket
+# the SERVER was actually holding. The stale socket was then dropped for
+# silence after 45 s and nothing ever redialled: the customer's job sat
+# "waiting" until a `homeassistant.reload_config_entry` fixed it in
+# seconds.
+#
+# 1.1.2 stops the DISPLACED SOCKET and redials, and the wait is what makes
+# that safe.
+
+#: How long to wait before redialling after a `replaced`.
+#:
+#: LONGER THAN THE SERVER'S 45 s LIVENESS DROP, on purpose, and that is the
+#: whole design. By the time we come back the newer socket is in one of two
+#: states:
+#:
+#:   * alive and answering -- a genuine second connection. The server
+#:     replaces US this time, we back off again, and after
+#:     `MAX_REPLACEMENTS` we stop and say so rather than oscillate.
+#:   * dead and already dropped -- the stale-socket case that caused the
+#:     fault. Our redial is then the thing that restores service, with no
+#:     reload and nobody watching.
+#:
+#: Redialling sooner would land inside the server's liveness window, where
+#: a stale socket is still registered, and could only earn another
+#: `replaced`.
+REPLACED_BACKOFF_S: Final = 45.0
+
+#: How many CONSECUTIVE replacements before the integration stops trying.
+#: Two installs genuinely sharing one job code would displace each other
+#: forever; three attempts is enough to ride out the racing-socket case and
+#: few enough that a real collision stops quickly and visibly. A session
+#: that does real work clears the count.
+MAX_REPLACEMENTS: Final = 3
+
+#: Shown on the diagnostic sensor once the replacements are spent. Names
+#: the actual situation -- another instance on this job code -- rather than
+#: claiming to be reconnecting, which is what a stopped agent must never do.
+REPLACED_MESSAGE: Final = (
+    "Another ElectriFix Connect instance is using this job code"
+)
 
 # ------------------------------------------------------------- the limits
 #

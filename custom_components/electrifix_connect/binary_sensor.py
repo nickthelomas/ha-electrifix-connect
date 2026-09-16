@@ -26,6 +26,7 @@ from .const import (
     FINISHED_MESSAGE,
     INTEGRATION_VERSION,
     REJECTED_MESSAGE,
+    REPLACED_MESSAGE,
 )
 from .relay import RelayAgent
 
@@ -72,6 +73,11 @@ class ElectrifixConnectionSensor(BinarySensorEntity):
                 # that claims to be retrying while doing nothing is worse
                 # than one that says plainly what went wrong.
                 else REJECTED_MESSAGE if self._agent.rejected
+                # ALSO BEFORE the fallback, for the same reason. An agent
+                # that has spent its replacements has STOPPED, and the
+                # honest sentence names the situation the customer can
+                # actually act on: something else is on this job code.
+                else REPLACED_MESSAGE if self._agent.replaced
                 else "Connected" if self._agent.connected
                 else "Reconnecting…"
             ),

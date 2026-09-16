@@ -68,8 +68,11 @@ from .const import (
     LOCAL_REQUEST_TIMEOUT,
     MAX_INFLIGHT,
     MAX_MSG_SIZE,
+    MAX_REPLACEMENTS,
     MAX_WS_SESSIONS,
     RELAY_ALLOWED,
+    REPLACED_BACKOFF_S,
+    REPLACED_MESSAGE,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -259,6 +262,21 @@ class RelayAgent:
         #: Guards against starting the re-auth flow twice for one agent --
         #: the state listener can fire more than once on the way down.
         self.reauth_started = False
+        #: Set when the integration has given up after `MAX_REPLACEMENTS`
+        #: consecutive displacements. Like `rejected` this is a STOPPED
+        #: state, and the sensor must say so rather than claim to be
+        #: reconnecting.
+        self.replaced = False
+
+        #: How many CONSECUTIVE times the service has displaced this
+        #: agent. Reset by any session that did real work: three
+        #: replacements spread across a week of a long job are not a
+        #: collision, they are three ordinary reconnect races.
+        self._replacements = 0
+        #: True while the LAST socket ended because we were replaced. Read
+        #: once by `_run` to choose `REPLACED_BACKOFF_S` over the
+        #: exponential curve, then cleared.
+        self._was_replaced = False
 
         self._task: asyncio.Task | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -361,6 +379,7 @@ class RelayAgent:
         while not self._stopping and not self.finished and not self.rejected:
             close_code: int | None = None
             served_for = 0.0
+            self._was_replaced = False
             try:
                 close_code, served_for = await self._connect_once()
             except asyncio.CancelledError:
@@ -373,6 +392,46 @@ class RelayAgent:
                 self._notify()
             if self._stopping or self.finished or self.rejected:
                 break
+            # A SESSION THAT DID REAL WORK AND WAS NOT ITSELF REPLACED
+            # clears the count. Both halves are load-bearing, and each was
+            # learned by getting it wrong.
+            #
+            # `served_for >= BACKOFF_RESET_AFTER` rather than "the socket
+            # came up", because the latter is true of the replaced session
+            # too -- it dials, is displaced a moment later, and the reset
+            # lands on the very connection that incremented the counter.
+            #
+            # `and not self._was_replaced`, because the threshold ALONE has
+            # exactly the same hole one level up (review H1). In the steady
+            # state of two installs trading one job code, each holds the
+            # registration for the OTHER's whole `REPLACED_BACKOFF_S`
+            # (45 s) before being displaced -- comfortably past
+            # `BACKOFF_RESET_AFTER` (30 s). So every displaced session
+            # cleared the count again, both copies sat at 1 of 3 forever,
+            # and the cap this whole branch exists for could never fire:
+            # the customer saw "Reconnecting..." indefinitely instead of
+            # being told that something else is on their job code.
+            #
+            # Counting CONSECUTIVE replacements is the point: three of them
+            # spread over a week of a long job are three ordinary reconnect
+            # races, not two installs fighting, and stopping on those would
+            # end a working integration for a reason that had gone away
+            # days earlier. A replacement is never one of those "in
+            # between" sessions -- it is the thing being counted.
+            if served_for >= BACKOFF_RESET_AFTER and not self._was_replaced:
+                self._replacements = 0
+            if self._was_replaced:
+                # A REPLACEMENT IS NOT A NETWORK FAILURE, so it does not
+                # feed the exponential curve -- it has its own fixed wait,
+                # keyed to the server's liveness window (see
+                # `REPLACED_BACKOFF_S`). The curve is left untouched so a
+                # genuine outage after this still backs off correctly.
+                self._was_replaced = False
+                try:
+                    await asyncio.sleep(REPLACED_BACKOFF_S)
+                except asyncio.CancelledError:
+                    raise
+                continue
             delay = next_delay(delay, close_code, served_for)
             # Jitter so a service restart does not bring every integration
             # in the world back in the same second.
@@ -503,12 +562,49 @@ class RelayAgent:
                 await self._send({"type": "pong", "id": frame.get("id")})
                 continue
             if kind == "replaced":
-                # A newer connection for this job took over. Stop this one
-                # WITHOUT stopping the integration: the newer socket is
-                # ours too (a reconnect that raced), so redialling would
-                # displace it in turn and oscillate forever.
-                _LOG.info("ElectriFix Connect: replaced by a newer connection")
-                self._stopping = True
+                # A newer connection for this job took over. STOP THIS
+                # SOCKET, NOT THE INTEGRATION (1.1.2).
+                #
+                # THE FIRST-CONNECTION FAULT, in production on 2026-09-16
+                # and again on 09-17. 1.1.1 set `_stopping` here on the
+                # reasoning that "the newer socket is ours too" -- and it
+                # very often was NOT. The config flow's validation socket
+                # sent a real hello, so a second socket existed for the job
+                # that nothing in this process was reading; whichever of
+                # the two registered second displaced the other, and this
+                # branch then ended the integration for good. The server
+                # dropped the stale socket for silence 45 s later and
+                # nothing ever redialled: the customer's job sat "waiting"
+                # until a `homeassistant.reload_config_entry` fixed it in
+                # seconds.
+                #
+                # So we redial, after `REPLACED_BACKOFF_S` -- deliberately
+                # longer than the server's own liveness drop, so that by
+                # the time we come back the newer socket has either proved
+                # itself (and will replace us again, which we count) or
+                # been dropped (and our redial is what restores service).
+                self._replacements += 1
+                self._was_replaced = True
+                if self._replacements >= MAX_REPLACEMENTS:
+                    # Not a race any more. Two installs are genuinely
+                    # sharing one job code and redialling would oscillate
+                    # forever, so stop and SAY WHICH -- an integration that
+                    # has given up must never look like one that is
+                    # retrying.
+                    self.replaced = True
+                    self.last_error = REPLACED_MESSAGE
+                    self._stopping = True
+                    _LOG.warning(
+                        "ElectriFix Connect: replaced %d times in a row; "
+                        "%s", self._replacements, REPLACED_MESSAGE,
+                    )
+                else:
+                    _LOG.info(
+                        "ElectriFix Connect: replaced by a newer connection "
+                        "(%d of %d); redialling in %.0fs",
+                        self._replacements, MAX_REPLACEMENTS,
+                        REPLACED_BACKOFF_S,
+                    )
                 break
             # Everything else is work, and work must not block the reader:
             # a long request would stall every other frame on the socket.

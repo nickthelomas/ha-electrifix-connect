@@ -66,6 +66,24 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
+    # ONE RELAY TASK PER ENTRY, ALWAYS -- and BEFORE the finished
+    # early-return, because "always" has to include the path that returns
+    # without starting one. Belt and braces against a double
+    # setup -- a reload that races an in-flight one, a restart that
+    # re-enters setup before unload finished. Two agents for one entry is
+    # exactly the two-sockets-one-job shape that caused the 2026-09-16/17
+    # first-connection fault, and an agent orphaned in `hass.data` is a
+    # socket nothing can ever stop: it would keep dialling with a token
+    # that setup is about to revoke and re-mint, and displace its own
+    # replacement on arrival.
+    stale: RelayAgent | None = hass.data[DOMAIN].pop(entry.entry_id, None)
+    if stale is not None:
+        _LOG.warning(
+            "ElectriFix Connect: an agent was already running for this "
+            "entry; stopping it before starting a new one"
+        )
+        await stale.async_stop()
+
     if _is_finished(entry):
         # THE JOB IS OVER, and setting up again would mint a fresh token and
         # redial a dead job. Found on the live throwaway: renaming the entry

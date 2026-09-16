@@ -8,11 +8,22 @@ length -- and the customer then gets a config entry that looks fine, sits
 there, and never connects, with the real answer (4401) only in a log they
 will never open.
 
-So the flow dials the relay once, sends the hello, and waits a moment. The
-service answers a bad code by CLOSING with 4401, a rate limit with 4429 and
-a switched-off relay with 4503, each of which becomes a different sentence
-in front of the customer. A socket that stays open is a code that works, and
-the flow closes it and lets the real agent make its own.
+So the flow dials the relay once and asks. The service answers a bad code
+by CLOSING with 4401, a rate limit with 4429 and a switched-off relay with
+4503, each of which becomes a different sentence in front of the customer.
+
+IT ASKS WITH `check`, NOT WITH `hello` (1.1.2)
+-----------------------------------------------
+Until 1.1.2 this dialog sent a REAL `hello`, and the service registered it
+as the job's agent -- so the check itself became a second socket for the
+job, racing the entry's real one. Whichever registered second displaced the
+first, and 1.1.1 treated being displaced as the end of the integration: the
+server ended up holding a socket nobody was reading and the customer's job
+sat "waiting" until someone reloaded the config entry. It happened twice in
+production, on 2026-09-16 and 09-17.
+
+`check` does the same authentication and registers nothing, and it answers
+in one round trip rather than eight seconds of silence.
 """
 from __future__ import annotations
 
@@ -163,8 +174,130 @@ def _fingerprint(code: str) -> str:
 
 
 async def _validate(hass: Any, code: str) -> str | None:
-    """`None` if the code works, else the translation key for the error."""
+    """`None` if the code works, else the translation key for the error.
+
+    A `check`, NOT A HELLO (1.1.2). THE FIRST-CONNECTION FAULT, in
+    production on 2026-09-16 and again on 09-17: this function used to send
+    a real `hello`, which made the SERVICE register this dialog as the
+    job's agent. It then closed its socket -- a close that through a
+    Cloudflare tunnel the service may not see for a long time -- while the
+    entry's real agent dialled in behind it. One of the two sockets got
+    told `replaced`, the integration treated that as terminal, and the
+    server was left holding a socket with nothing reading it. The customer
+    watched their job sit at "waiting" until a
+    `homeassistant.reload_config_entry` fixed it instantly.
+
+    `check` verifies the code EXACTLY as a hello does -- the same hello
+    budget, the same constant-time hash compare, the same 4401/4429/4503
+    closes -- and registers nothing. It also answers in one round trip
+    instead of eight seconds of deliberate silence, so Submit returns as
+    fast as the customer's uplink allows.
+
+    WHEN THE LEGACY FALLBACK RUNS, AND WHY NOT ON A 4401
+    -----------------------------------------------------
+    An earlier build fell back to the hello path on ANY 4401, reasoning
+    that a server predating `check` closes an unknown first frame with the
+    same code it uses for a wrong job code, so the two are
+    indistinguishable. True -- but they are not equally likely and the
+    fallback is not free (review L2). Both dials spend the per-IP
+    `HelloBudget` (10 a minute), so a customer mistyping their code got
+    five attempts instead of ten, and the sixth told them "too many
+    attempts" rather than "that code is wrong" -- the less useful sentence,
+    on exactly the path where the useful one matters.
+
+    The overwhelmingly common meaning of a 4401 is a wrong code, so that is
+    what it is taken to mean, in one dial. The fallback now needs EVIDENCE
+    that the far end does not understand `check`: either a close whose code
+    is none this protocol defines, or a socket that stays OPEN and says
+    nothing -- a current server always answers a `check` with `check_ok` or
+    a close, so silence on a live socket is not something it does.
+    """
     url = os.environ.get(ENV_RELAY_URL) or DEFAULT_RELAY_URL
+    #: Set when the far end proved it does not speak `check`. The legacy
+    #: dial then happens OUTSIDE the block below (review L3): dialling it
+    #: in there held the check socket open for the whole second dial, so
+    #: two sockets existed at once during validation -- which is the exact
+    #: shape this change set exists to remove.
+    legacy_needed = False
+    session = aiohttp.ClientSession()
+    try:
+        async with session.ws_connect(url, heartbeat=None) as ws:
+            await ws.send_str(json.dumps({
+                "type": "check",
+                "job_code": code,
+                "integration_version": INTEGRATION_VERSION,
+            }))
+            try:
+                msg = await asyncio.wait_for(ws.receive(), _VALIDATE_SECONDS)
+            except asyncio.TimeoutError:
+                # NOTHING AT ALL, on a socket that is still open. A current
+                # server answers a `check` either way, so this is a far end
+                # that read an unknown frame and simply kept reading --
+                # which is what a server predating `check` does. The code
+                # may be perfectly good, so the hello path decides it.
+                legacy_needed = not ws.closed
+                if not legacy_needed:
+                    return _close_error(ws.close_code)
+                msg = None
+            if msg is not None:
+                if msg.type is aiohttp.WSMsgType.TEXT:
+                    try:
+                        frame = json.loads(msg.data)
+                    except (ValueError, TypeError):
+                        frame = {}
+                    if (isinstance(frame, dict)
+                            and frame.get("type") == "check_ok"):
+                        return None
+                    # Some other frame: the socket was accepted and the far
+                    # end is talking to us, which on any server means the
+                    # code got past the hello check.
+                    return None
+                elif msg.type in (aiohttp.WSMsgType.CLOSE,
+                                  aiohttp.WSMsgType.CLOSED,
+                                  aiohttp.WSMsgType.CLOSING):
+                    # A CLOSE THIS PROTOCOL DEFINES is an answer, including
+                    # 4401 -- see the docstring. Only a code we do not
+                    # recognise suggests a far end that does not understand
+                    # the frame it was sent.
+                    if ws.close_code in (CLOSE_BAD_CODE, CLOSE_RATE_LIMITED,
+                                         CLOSE_RELAY_OFF):
+                        return _close_error(ws.close_code)
+                    legacy_needed = True
+                elif msg.type is aiohttp.WSMsgType.ERROR:
+                    return "cannot_connect"
+                else:
+                    return None
+    except aiohttp.ClientError as exc:
+        _LOG.debug("ElectriFix Connect validation failed: %s", exc)
+        return "cannot_connect"
+    except asyncio.TimeoutError:
+        return "cannot_connect"
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("ElectriFix Connect validation error: %s", exc)
+        return "unknown"
+    finally:
+        await session.close()
+
+    # OUTSIDE the block and after `session.close()`: one socket at a time.
+    if legacy_needed:
+        _LOG.debug(
+            "ElectriFix Connect: the relay did not understand `check`; "
+            "falling back to the 1.1.1 validation"
+        )
+        return await _validate_legacy(url, code)
+    return None
+
+
+async def _validate_legacy(url: str, code: str) -> str | None:
+    """The 1.1.1 validation, kept ONLY for a server that predates `check`.
+
+    DOCUMENTED DEGRADATION. This sends a real `hello`, so an older service
+    registers this socket as the job's agent and the first-connection race
+    is back for exactly as long as that deployment lives. It is still the
+    right answer here: the alternative is telling a customer whose code is
+    fine that it is wrong, and the race is recoverable now that `replaced`
+    is no longer terminal in `relay.py`.
+    """
     session = aiohttp.ClientSession()
     try:
         async with session.ws_connect(url, heartbeat=None) as ws:
@@ -175,8 +308,8 @@ async def _validate(hass: Any, code: str) -> str | None:
                 "install_type": "",
                 "integration_version": INTEGRATION_VERSION,
             }))
-            # Wait for an objection. Silence is success: the service does
-            # not ACK a hello, it simply keeps reading.
+            # Wait for an objection. Silence is success: an older service
+            # does not ACK a hello, it simply keeps reading.
             try:
                 msg = await asyncio.wait_for(ws.receive(), _VALIDATE_SECONDS)
             except asyncio.TimeoutError:
@@ -186,8 +319,6 @@ async def _validate(hass: Any, code: str) -> str | None:
                 return _close_error(ws.close_code)
             if msg.type is aiohttp.WSMsgType.ERROR:
                 return "cannot_connect"
-            # A frame arrived, which means the socket was accepted and the
-            # service is already talking to us. The code is good.
             return None
     except aiohttp.ClientError as exc:
         _LOG.debug("ElectriFix Connect validation failed: %s", exc)

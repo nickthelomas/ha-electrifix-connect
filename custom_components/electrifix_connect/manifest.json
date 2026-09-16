@@ -1,7 +1,7 @@
 {
   "domain": "electrifix_connect",
   "name": "ElectriFix Connect",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "documentation": "https://github.com/nickthelomas/ha-electrifix-connect",
   "issue_tracker": "https://github.com/nickthelomas/ha-electrifix-connect/issues",
   "codeowners": ["@nickthelomas"],
