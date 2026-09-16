@@ -486,6 +486,22 @@ class RelayAgent:
             if kind == "bye":
                 await self._on_bye(str(frame.get("reason") or ""))
                 break
+            if kind == "ping":
+                # ANSWERED HERE, IN THE READER, not handed to `_dispatch`.
+                #
+                # It is one line of work with no Home Assistant call behind
+                # it, so a task would cost more than it does -- and, more
+                # importantly, `_dispatch` goes through the MAX_INFLIGHT
+                # cap. A box that is busy enough to be at the cap is
+                # exactly the box whose pong must still get out: refusing
+                # it there would make "busy" indistinguishable from "gone"
+                # and have the service drop a working integration.
+                #
+                # The service treats ANY frame as life, so this matters
+                # most on a quiet job, where there is no other traffic to
+                # prove the socket is still there.
+                await self._send({"type": "pong", "id": frame.get("id")})
+                continue
             if kind == "replaced":
                 # A newer connection for this job took over. Stop this one
                 # WITHOUT stopping the integration: the newer socket is

@@ -27,7 +27,7 @@ DOMAIN: Final = "electrifix_connect"
 
 #: Bumped with the integration; sent in the hello so the service's logs and
 #: the job record say which build a customer is on when something is odd.
-INTEGRATION_VERSION: Final = "1.1.0"
+INTEGRATION_VERSION: Final = "1.1.1"
 
 #: Where the agent dials. Overridable by an environment variable ONLY, and
 #: not by anything a frame can say: a relay that could redirect its own
