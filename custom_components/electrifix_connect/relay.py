@@ -149,6 +149,47 @@ def decoded_path(path: str) -> str:
         return p
 
 
+def normalised_path(path: str) -> str:
+    """The path as a lenient server would route it, for matching only.
+
+    Query stripped, percent-decoded once, empty and `.` segments dropped,
+    `..` resolved, lower-cased -- so `/api//camera_proxy`,
+    `/api/./camera_proxy` and `/api/camera%5Fproxy` cannot step round a
+    prefix test. Nothing normalised here is sent anywhere. An identical
+    copy of the service's `normalised_path`; the parity test compares them.
+    """
+    p = path or ""
+    if "?" in p:
+        p = p.split("?", 1)[0]
+    try:
+        p = unquote(p)
+    except Exception:  # noqa: BLE001 - an undecodable path is used as-is
+        pass
+    out: list[str] = []
+    for seg in p.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if out:
+                out.pop()
+            continue
+        out.append(seg)
+    return ("/" + "/".join(out)).lower()
+
+
+def private_path_reason(path: str) -> str:
+    """A plain-English refusal if `path` is on the deny list, else ""."""
+    p = normalised_path(path)
+    for prefix in RELAY_ALLOWED["deny_prefixes"]:
+        if p.startswith(prefix):
+            return (
+                "ElectriFix never looks at your camera images, recordings, "
+                "media or add-on pages, so a request for "
+                f"{prefix} was refused before it reached your Home Assistant."
+            )
+    return ""
+
+
 def forbidden_domain(path: str) -> str:
     """The security domain this service path operates, or "".
 
@@ -179,6 +220,11 @@ def check_allowed(method: str, path: str) -> None:
     # subtree, which is the one way a prefix rule fails open.
     if ".." in p:
         raise NotAllowed(f"{m} {path} contains a path traversal")
+    # PRIVATE PATHS FIRST, whatever the method (1.1.4): camera images,
+    # media, add-on pages. No allow below can widen past this.
+    reason = private_path_reason(path)
+    if reason:
+        raise NotAllowed(reason)
 
     if m == "GET":
         if p.startswith(tuple(RELAY_ALLOWED["get_prefixes"])):

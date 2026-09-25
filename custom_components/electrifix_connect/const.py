@@ -27,7 +27,7 @@ DOMAIN: Final = "electrifix_connect"
 
 #: Bumped with the integration; sent in the hello so the service's logs and
 #: the job record say which build a customer is on when something is odd.
-INTEGRATION_VERSION: Final = "1.1.3"
+INTEGRATION_VERSION: Final = "1.1.4"
 
 #: Where the agent dials. Overridable by an environment variable ONLY, and
 #: not by anything a frame can say: a relay that could redirect its own
@@ -193,7 +193,26 @@ MAX_INFLIGHT: Final = 8
 # reshaping here that happened to hold the same strings would still be a
 # divergence from the thing being mirrored.
 
-#: GET anywhere under /api/ -- reading is the job.
+#: REFUSED on every method, before any allow below (1.1.4, 2026-09-25):
+#: camera snapshots and streams, media, add-on pages, onboarding and
+#: webhooks. This integration never reads your camera images; before 1.1.4
+#: that was a promise, now it is a rule checked here, inside your own Home
+#: Assistant. Matched as a plain prefix, so `/api/camera_proxy` also covers
+#: `/api/camera_proxy_stream`. A copy of the service's
+#: `haclient.safety.guard.PRIVATE_PATH_PREFIXES`; the parity test checks it.
+DENY_PREFIXES: Final[tuple[str, ...]] = (
+    "/api/camera_proxy",
+    "/api/camera_proxy_stream",
+    "/api/media_player_proxy",
+    "/api/media_source",
+    "/api/image_proxy",
+    "/api/tts_proxy",
+    "/api/hassio/ingress",
+    "/api/onboarding",
+    "/api/webhook",
+)
+
+#: GET anywhere under /api/ (except the deny list) -- reading is the job.
 GET_PREFIXES: Final[tuple[str, ...]] = ("/api/",)
 
 #: The allow-listed service calls, in `domain.service` form.
@@ -261,6 +280,7 @@ WS_COMMANDS: Final[frozenset[str]] = frozenset({
 #: The same mapping the service exports, so the parity test can compare one
 #: object against one object rather than field by field.
 RELAY_ALLOWED: Final[dict[str, Any]] = {
+    "deny_prefixes": DENY_PREFIXES,
     "get_prefixes": GET_PREFIXES,
     "post_paths": POST_PATHS,
     "post_prefixes": POST_PREFIXES,

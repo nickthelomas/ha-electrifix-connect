@@ -81,7 +81,7 @@ it and never stores it. The integration uses it only to talk to your own
 Home Assistant, on your own machine.
 
 The token appears in your profile as **ElectriFix Connect**
-(*Settings → People → your user → Refresh tokens*), so you can see it and
+(your *Profile → Security → Long-lived access tokens*), so you can see it and
 revoke it yourself at any time. We revoke it automatically when the job
 finishes, and whenever you disable or remove the integration.
 
